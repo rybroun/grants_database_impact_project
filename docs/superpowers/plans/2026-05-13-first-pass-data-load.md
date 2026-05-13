@@ -4,7 +4,7 @@
 
 **Goal:** Produce a queryable Supabase database with the full data model populated from USASpending (grants + orgs) and IRS BMF (org enrichment via ER), covering all 50 states.
 
-**Architecture:** Python scripts run locally as a one-time batch pipeline. Download IRS BMF nationally, fetch grant recipients from USASpending API, run v3 ER matching, load everything into Supabase Postgres. No automation — just a static first pass we can query against.
+**Architecture:** Python scripts run locally as a one-time batch pipeline using the medallion schema pattern (raw → staging → public). Raw BMF and USASpending data lands in `raw` schema, normalized/pre-ER records go to `staging`, and final ER-resolved orgs + grants go to `public`. No automation — just a static first pass we can query against. The layered approach means we can re-run ER or fix normalization without re-fetching source data.
 
 **Tech Stack:** Python 3.10, pandas, supabase-py, USASpending REST API, IRS BMF CSV downloads, Supabase (Postgres)
 
@@ -35,11 +35,16 @@ impact_project/
 **What we're NOT building in this plan:**
 - GDELT / news article ingestion (no reports or sources yet — just the org + grant layer)
 - GitHub Actions automation
-- Medallion schema separation (raw/staging/public) — everything goes to public for this first pass
 - ProPublica enrichment
 
 **What we ARE building:**
-- All 8 tables created in Supabase
+- Medallion schema: `raw`, `staging`, and `public` Postgres schemas
+- `raw.bmf_records` — raw IRS BMF data as ingested
+- `raw.usaspending_recipients` — raw USASpending recipient API responses
+- `raw.usaspending_awards` — raw USASpending award data
+- `staging.normalized_orgs` — normalized org records pre-ER (name/address/city normalized, business type classified)
+- `staging.er_candidates` — ER match candidates with confidence scores before final resolution
+- `public` schema: all 8 production tables (organizations, grants, grant_grantees, reports, sources, report_sources, sectors, action_types)
 - Reference data seeded (16 sectors, 20 action types)
 - Organizations table populated nationally via ER (USASpending + IRS BMF)
 - Grants table populated from USASpending award data
@@ -742,6 +747,117 @@ import uuid
 from pipeline.seed_data import SECTORS, ACTION_TYPES
 
 SCHEMA_SQL = """
+-- ============================================================
+-- Medallion Architecture: raw → staging → public
+-- ============================================================
+
+-- Raw schema: unprocessed data exactly as ingested from sources
+CREATE SCHEMA IF NOT EXISTS raw;
+
+-- Raw BMF records (one row per IRS BMF record)
+CREATE TABLE IF NOT EXISTS raw.bmf_records (
+    id BIGSERIAL PRIMARY KEY,
+    ein TEXT,
+    name TEXT,
+    ico TEXT,
+    street TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    subsection TEXT,
+    ntee_cd TEXT,
+    asset_amt TEXT,
+    income_amt TEXT,
+    revenue_amt TEXT,
+    ruling TEXT,
+    source_file TEXT,  -- e.g., "eo_co.csv"
+    ingested_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Raw USASpending recipient data
+CREATE TABLE IF NOT EXISTS raw.usaspending_recipients (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT,
+    uei TEXT,
+    duns TEXT,
+    address TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    business_types JSONB,
+    alt_names JSONB,
+    raw_response JSONB,  -- full API response for lineage
+    ingested_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Raw USASpending award data
+CREATE TABLE IF NOT EXISTS raw.usaspending_awards (
+    id BIGSERIAL PRIMARY KEY,
+    award_id TEXT,
+    recipient_name TEXT,
+    recipient_id TEXT,
+    award_amount NUMERIC,
+    awarding_agency TEXT,
+    awarding_sub_agency TEXT,
+    cfda_number TEXT,
+    award_type TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    description TEXT,
+    internal_id BIGINT,
+    generated_internal_id TEXT,
+    ingested_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_bmf_ein ON raw.bmf_records(ein);
+CREATE INDEX IF NOT EXISTS idx_raw_bmf_state ON raw.bmf_records(state);
+CREATE INDEX IF NOT EXISTS idx_raw_recipients_uei ON raw.usaspending_recipients(uei);
+CREATE INDEX IF NOT EXISTS idx_raw_awards_award_id ON raw.usaspending_awards(award_id);
+
+-- Staging schema: normalized, pre-ER data
+CREATE SCHEMA IF NOT EXISTS staging;
+
+-- Normalized org records ready for ER matching
+CREATE TABLE IF NOT EXISTS staging.normalized_orgs (
+    id BIGSERIAL PRIMARY KEY,
+    source TEXT NOT NULL CHECK (source IN ('usaspending', 'bmf')),
+    source_id TEXT,  -- raw table PK or external ID
+    name TEXT,
+    normalized_name TEXT,
+    normalized_address TEXT,
+    normalized_city TEXT,
+    state TEXT,
+    zip5 TEXT,
+    uei TEXT,
+    ein TEXT,
+    business_types JSONB,
+    alt_names JSONB,
+    tokens TEXT[],  -- pre-computed name tokens for matching
+    processed_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ER match candidates with scores (audit trail)
+CREATE TABLE IF NOT EXISTS staging.er_candidates (
+    id BIGSERIAL PRIMARY KEY,
+    usaspending_org_id BIGINT,  -- FK to staging.normalized_orgs
+    bmf_org_id BIGINT,          -- FK to staging.normalized_orgs
+    confidence_score FLOAT,
+    match_method TEXT,
+    name_similarity FLOAT,
+    address_similarity FLOAT,
+    accepted BOOLEAN DEFAULT FALSE,  -- promoted to public?
+    reviewed_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_staging_orgs_norm_name ON staging.normalized_orgs(normalized_name);
+CREATE INDEX IF NOT EXISTS idx_staging_orgs_uei ON staging.normalized_orgs(uei);
+CREATE INDEX IF NOT EXISTS idx_staging_orgs_ein ON staging.normalized_orgs(ein);
+CREATE INDEX IF NOT EXISTS idx_staging_er_score ON staging.er_candidates(confidence_score);
+
+-- ============================================================
+-- Public schema: production tables (Gold layer)
+-- ============================================================
+
 -- Organizations
 CREATE TABLE IF NOT EXISTS organizations (
     organization_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -928,12 +1044,150 @@ git commit -m "feat: Supabase schema DDL with seed data for sectors and action t
 import uuid
 from supabase import create_client
 from pipeline.config import SUPABASE_URL, SUPABASE_KEY
+from pipeline.normalize import normalize_name, normalize_address, normalize_city
 from pipeline.er_matcher import is_govt_entity
 
 
 def get_client():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
+
+def _batch_insert(client, table: str, rows: list[dict], batch_size: int = 500) -> None:
+    """Insert rows in batches."""
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        client.table(table).insert(batch).execute()
+
+
+# ---- Raw layer ----
+
+def load_raw_bmf(bmf_records: list[dict]) -> None:
+    """Load raw BMF records into raw.bmf_records."""
+    client = get_client()
+    rows = [
+        {
+            "ein": r.get("EIN"),
+            "name": r.get("NAME"),
+            "ico": r.get("ICO"),
+            "street": r.get("STREET"),
+            "city": r.get("CITY"),
+            "state": r.get("STATE"),
+            "zip": r.get("ZIP"),
+            "subsection": r.get("SUBSECTION"),
+            "ntee_cd": r.get("NTEE_CD"),
+            "asset_amt": r.get("ASSET_AMT"),
+            "income_amt": r.get("INCOME_AMT"),
+            "revenue_amt": r.get("REVENUE_AMT"),
+            "ruling": r.get("RULING"),
+            "source_file": r.get("_source_file", ""),
+        }
+        for r in bmf_records
+    ]
+    _batch_insert(client, "raw.bmf_records", rows)
+    print(f"Loaded {len(rows)} raw BMF records")
+
+
+def load_raw_recipients(recipients: list[dict]) -> None:
+    """Load raw USASpending recipients into raw.usaspending_recipients."""
+    client = get_client()
+    rows = [
+        {
+            "name": r.get("name"),
+            "uei": r.get("uei"),
+            "duns": r.get("duns"),
+            "address": r.get("address"),
+            "city": r.get("city"),
+            "state": r.get("state"),
+            "zip": r.get("zip"),
+            "business_types": r.get("business_types"),
+            "alt_names": r.get("alt_names"),
+        }
+        for r in recipients
+    ]
+    _batch_insert(client, "raw.usaspending_recipients", rows)
+    print(f"Loaded {len(rows)} raw recipients")
+
+
+def load_raw_awards(awards: list[dict]) -> None:
+    """Load raw USASpending awards into raw.usaspending_awards."""
+    client = get_client()
+    rows = [
+        {
+            "award_id": a.get("Award ID"),
+            "recipient_name": a.get("Recipient Name"),
+            "recipient_id": a.get("recipient_id"),
+            "award_amount": a.get("Award Amount"),
+            "awarding_agency": a.get("Awarding Agency"),
+            "awarding_sub_agency": a.get("Awarding Sub Agency"),
+            "cfda_number": a.get("CFDA Number"),
+            "award_type": a.get("Award Type"),
+            "start_date": a.get("Start Date"),
+            "end_date": a.get("End Date"),
+            "description": a.get("Description"),
+            "internal_id": a.get("internal_id"),
+            "generated_internal_id": a.get("generated_internal_id"),
+        }
+        for a in awards
+    ]
+    _batch_insert(client, "raw.usaspending_awards", rows)
+    print(f"Loaded {len(rows)} raw awards")
+
+
+# ---- Staging layer ----
+
+def load_staging_orgs(recipients: list[dict], bmf_records: list[dict]) -> None:
+    """Load normalized org records into staging.normalized_orgs."""
+    client = get_client()
+    rows = []
+    for r in recipients:
+        rows.append({
+            "source": "usaspending",
+            "source_id": r.get("uei"),
+            "name": r.get("name"),
+            "normalized_name": normalize_name(r.get("name", "")),
+            "normalized_address": normalize_address(r.get("address", "")),
+            "normalized_city": normalize_city(r.get("city", "")),
+            "state": r.get("state"),
+            "zip5": str(r.get("zip", ""))[:5],
+            "uei": r.get("uei"),
+            "business_types": r.get("business_types"),
+            "alt_names": r.get("alt_names"),
+        })
+    for r in bmf_records:
+        rows.append({
+            "source": "bmf",
+            "source_id": r.get("EIN"),
+            "name": r.get("NAME"),
+            "normalized_name": normalize_name(r.get("NAME", "")),
+            "normalized_address": normalize_address(r.get("STREET", "")),
+            "normalized_city": normalize_city(r.get("CITY", "")),
+            "state": r.get("STATE"),
+            "zip5": str(r.get("ZIP", ""))[:5],
+            "ein": r.get("EIN"),
+        })
+    _batch_insert(client, "staging.normalized_orgs", rows)
+    print(f"Loaded {len(rows)} staging normalized orgs")
+
+
+def load_staging_er_candidates(
+    matches: dict[str, tuple[dict | None, float, str | None]],
+) -> None:
+    """Load ER match candidates into staging.er_candidates for audit."""
+    client = get_client()
+    rows = [
+        {
+            "confidence_score": round(score, 3),
+            "match_method": method,
+            "accepted": score >= 0.55,
+        }
+        for uei, (bmf_match, score, method) in matches.items()
+        if bmf_match is not None
+    ]
+    _batch_insert(client, "staging.er_candidates", rows)
+    print(f"Loaded {len(rows)} ER candidates")
+
+
+# ---- Public layer ----
 
 def load_organizations(
     recipients: list[dict],
@@ -1116,7 +1370,11 @@ from pipeline.config import DATA_DIR, US_STATES
 from pipeline.bmf_loader import download_bmf, load_bmf, build_bmf_index
 from pipeline.usaspending_client import fetch_nonprofit_recipients, fetch_awards_for_state
 from pipeline.er_matcher import match_recipient, is_govt_entity
-from pipeline.db_loader import load_organizations, load_grants
+from pipeline.db_loader import (
+    load_raw_bmf, load_raw_recipients, load_raw_awards,
+    load_staging_orgs, load_staging_er_candidates,
+    load_organizations, load_grants,
+)
 
 
 def run(states: list[str] | None = None):
@@ -1203,8 +1461,19 @@ def run(states: list[str] | None = None):
     print(f"Matched: {matched}/{nonprofit_total} ({matched/nonprofit_total*100:.1f}%)")
     print(f"ER-created: {er_created}")
 
-    # Step 5: Load into Supabase
-    print("\n=== Step 5: Load into Supabase ===")
+    # Step 5a: Load raw layer (Bronze)
+    print("\n=== Step 5a: Load raw layer ===")
+    load_raw_bmf(bmf_records)
+    load_raw_recipients(unique_recipients)
+    load_raw_awards(all_awards)
+
+    # Step 5b: Load staging layer (Silver)
+    print("\n=== Step 5b: Load staging layer ===")
+    load_staging_orgs(unique_recipients, bmf_records)
+    load_staging_er_candidates(bmf_matches)
+
+    # Step 5c: Load public layer (Gold)
+    print("\n=== Step 5c: Load public layer ===")
     uei_to_org_id = load_organizations(unique_recipients, bmf_matches)
     load_grants(all_awards, uei_to_org_id, recipient_id_to_uei)
 
@@ -1212,6 +1481,8 @@ def run(states: list[str] | None = None):
     print(f"\n=== Done in {elapsed/60:.1f} minutes ===")
     print(f"Organizations: {len(uei_to_org_id)}")
     print(f"Grants: {len(all_awards)}")
+    print(f"Raw BMF records: {len(bmf_records)}")
+    print(f"Raw awards: {len(all_awards)}")
 
 
 if __name__ == "__main__":
@@ -1257,11 +1528,17 @@ After the pipeline runs, verify the data by running these queries in Supabase SQ
 - [ ] **Step 1: Check record counts**
 
 ```sql
-SELECT 'organizations' as tbl, count(*) FROM organizations
-UNION ALL SELECT 'grants', count(*) FROM grants
-UNION ALL SELECT 'grant_grantees', count(*) FROM grant_grantees
-UNION ALL SELECT 'sectors', count(*) FROM sectors
-UNION ALL SELECT 'action_types', count(*) FROM action_types;
+-- Medallion layer counts
+SELECT 'raw.bmf_records' as tbl, count(*) FROM raw.bmf_records
+UNION ALL SELECT 'raw.usaspending_recipients', count(*) FROM raw.usaspending_recipients
+UNION ALL SELECT 'raw.usaspending_awards', count(*) FROM raw.usaspending_awards
+UNION ALL SELECT 'staging.normalized_orgs', count(*) FROM staging.normalized_orgs
+UNION ALL SELECT 'staging.er_candidates', count(*) FROM staging.er_candidates
+UNION ALL SELECT 'public.organizations', count(*) FROM organizations
+UNION ALL SELECT 'public.grants', count(*) FROM grants
+UNION ALL SELECT 'public.grant_grantees', count(*) FROM grant_grantees
+UNION ALL SELECT 'public.sectors', count(*) FROM sectors
+UNION ALL SELECT 'public.action_types', count(*) FROM action_types;
 ```
 
 - [ ] **Step 2: Check ER quality**
