@@ -12,6 +12,8 @@ and nonprofit registries, then serves structured data to power the federal chang
 
 ## Key docs
 - **Data model & pipeline spec**: `docs/superpowers/specs/2026-05-12-impact-project-data-model-design.md`
+- **ER system spec**: `docs/superpowers/specs/2026-05-13-er-system-spec.md`
+- **ER experiment findings** (detailed): `docs/superpowers/specs/2026-05-13-er-experiment-findings.md`
 
 ## Conventions
 - Grant is the core entity; reports are events that happen to grants
