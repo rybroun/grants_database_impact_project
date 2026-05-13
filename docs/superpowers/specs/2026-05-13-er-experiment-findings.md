@@ -278,3 +278,89 @@ Address similarity proved valuable for confirming subsidiary/parent relationship
 - "COMMUNITY HOUSING CONCEPTS EAST CENTRAL LLC" → parent org: addr=1.0 (same physical address → confirmed subsidiary)
 - "WESTERN GOVERNORS' ASSOCIATION" → "WESTERN GOVERNORS FOUNDATION": addr=1.0 (same building → related orgs)
 - "NATIONAL CONFERENCE OF STATE LEGISLATURES" → "NCSL FOUNDATION FOR STATE LEGISLATURES": addr=1.0 (same office → confirmed)
+
+---
+
+## Resolving Unmatched Organizations
+
+Not every grant recipient will match a BMF record. The remaining ~20% fall into distinct categories, each needing a different resolution strategy.
+
+### Principle: Every Grant Recipient Gets an Org Record
+
+No grant data should be orphaned. If an org can't be matched to BMF, it still enters the `organizations` table with `status = 'er_created'` and no EIN. These are first-class records that can be enriched later.
+
+### Category 1: Cross-State National Orgs (e.g., Salvation Army)
+
+**Problem**: USASpending filters by where the grant was spent (Colorado), but the recipient is registered in another state (California). The BMF record exists but in a different state file.
+
+**Resolution**: Create two org records:
+- **Parent org** — matched to BMF in the correct state, has EIN. Status: `active`.
+- **Local presence** — ER-created with the grant location address, linked via `parent_org_id`. Status: `er_created`.
+
+The grant attaches to the local presence (correct geography for the map) while maintaining the link to the real entity.
+
+**Example**:
+```
+Parent:  THE SALVATION ARMY | EIN from CA BMF | 30840 HAWTHORNE BLVD, RANCHO PALOS VERDES, CA
+  └─ Local: THE SALVATION ARMY (CO) | no EIN | parent_org_id → parent | grant address in CO
+```
+
+**Production fix**: Load ALL 50 state BMF files so cross-state parents can be found.
+
+### Category 2: Rebranded/Renamed Orgs (e.g., Diversus Health)
+
+**Problem**: The org exists in BMF under a slightly different name. "DIVERSUS HEALTH SERVICES" vs "DIVERSUS HEALTH INC" — normalization strips "INC" but not "SERVICES".
+
+**Resolution**: Expand the suffix strip list and use address matching as confirmation. Fixed by adding "SERVICES", "ASSOCIATES", "PARTNERS", "GROUP", "AGENCY", "CENTER", "PROGRAMME" to the normalization list.
+
+**Example**:
+```
+USASpending: DIVERSUS HEALTH SERVICES | 675 SOUTHPOINTE CT STE 100, Colorado Springs, CO 80906
+BMF:         DIVERSUS HEALTH INC      | 675 SOUTHPOINTE CT STE 100, Colorado Spgs, CO 80906
+→ Same address, name normalizes to same root. Now matched.
+```
+
+### Category 3: Missing from BMF Entirely (e.g., Cheyenne YMCA, Centrum)
+
+**Problem**: No name match, no address match, no alt name match. The org is genuinely absent from the IRS BMF extract.
+
+Possible reasons:
+- Registered under a parent org (YMCA of the USA)
+- New org not yet in monthly BMF extract
+- Lost tax-exempt status
+- Different legal name with no overlap to search terms
+
+**Resolution**: Create as `er_created` with all available USASpending data:
+- Name, UEI, address from USASpending
+- `status = 'er_created'`, `confidence_score = 0`
+- No EIN — flagged as "not BMF backed"
+- If a likely parent can be identified (e.g., YMCA of the USA), link via `parent_org_id`
+- Queue for enrichment: ProPublica API lookup by name/address, manual review
+
+**Example**:
+```
+CHEYENNE FAMILY YMCA | UEI=... | 1426 E LINCOLNWAY, CHEYENNE, WY 82001
+  status: er_created | ein: NULL | confidence_score: 0
+  parent_org_id: → YMCA OF THE USA (if identifiable)
+```
+
+### Category 4: Not a Traditional Nonprofit (e.g., Tri-State Generation)
+
+**Problem**: USASpending classifies the entity as `corporate_entity_not_tax_exempt`. It receives federal grants but is not tax-exempt, so it's correctly absent from BMF.
+
+**Resolution**: Create as `er_created` with `org_type` reflecting the actual business type from USASpending (e.g., `private` instead of `nonprofit`). These are legitimate grant recipients that belong in the organizations table but will never have a BMF match.
+
+### Data Model Changes
+
+Added to `organizations` table:
+- `parent_org_id` (UUID, self-FK) — links local presence/chapter to national/parent org
+- `status` enum expanded: `active` / `merged` / `needs_review` / `er_created`
+
+### Enrichment Pipeline for ER-Created Orgs
+
+ER-created orgs are candidates for later resolution:
+1. **ProPublica API** — search by name or address to find EIN
+2. **Cross-state BMF search** — load all 50 state files and retry matching
+3. **DUNS number lookup** — USASpending includes DUNS which may help cross-reference
+4. **Manual review queue** — surface to human reviewers with all available context
+5. **Future BMF updates** — re-run matching monthly as BMF refreshes

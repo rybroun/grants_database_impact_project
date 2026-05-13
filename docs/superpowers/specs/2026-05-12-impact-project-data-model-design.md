@@ -50,7 +50,8 @@ Nonprofits, federal agencies, state/local government bodies, private entities.
 |---|---|---|
 | organization_id | UUID | PK |
 | canonical_org_id | UUID | Self-FK — points to canonical record if this is a merged duplicate |
-| status | enum | `active` / `merged` / `needs_review` |
+| parent_org_id | UUID | Self-FK — links local presence/chapter to national/parent org |
+| status | enum | `active` / `merged` / `needs_review` / `er_created` |
 | name | text | Display name |
 | name_aliases | text[] | All alternate names seen across sources |
 | org_type | enum | `nonprofit` / `federal_agency` / `state_agency` / `local_government` / `private` |
@@ -69,6 +70,8 @@ Nonprofits, federal agencies, state/local government bodies, private entities.
 | updated_at | timestamp | |
 
 **ER strategy**: EIN is the strongest match key for nonprofits. SAM UEI for federal contractors/grantees. Fall back to fuzzy name + zip match. `name_aliases` accumulates every variant seen so future matching improves over time. Duplicates are merged via `canonical_org_id` — never deleted.
+
+**ER-created organizations**: When a grant recipient cannot be matched to any BMF record, an org record is still created with `status = 'er_created'` and no EIN. This ensures every grant has an org record and no grant data is orphaned. ER-created orgs are candidates for later enrichment (ProPublica lookup, manual review, future BMF updates). When a national org (e.g., Salvation Army in CA) receives a grant in another state (e.g., CO), two records are created: the national parent (matched to BMF, has EIN) and a local presence linked via `parent_org_id` (has the grant location address, no EIN of its own).
 
 ---
 
