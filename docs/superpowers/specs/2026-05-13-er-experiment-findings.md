@@ -230,3 +230,51 @@ False positives in fuzzy matches are **3x higher** at Colorado scale vs Wyoming.
 2. **Minimum token threshold** — reject fuzzy matches where the query name has fewer than 3 significant tokens
 3. **Penalize generic tokens** — lower the weight of common words like "CENTER", "FOUNDATION", "COMMUNITY", "HOUSING", "ASSOCIATION" in Jaccard scoring
 4. **Chapter vs. national detection** — when matching "X OF COLORADO" to "X", check if both are in BMF and flag as potential chapter/national confusion
+
+---
+
+## v3: Address Matching (Implemented)
+
+After the v2 analysis revealed that address data exists on both sides but was never compared, we implemented v3 which adds:
+
+1. **Address normalization** — `ROAD` → `RD`, `STREET` → `ST`, strip PO BOX/Suite/Unit, collapse whitespace
+2. **Address similarity scoring** — exact match (1.0), containment (0.9), same street number + overlapping tokens (0.7-0.9)
+3. **City name normalization** — dictionary mapping BMF abbreviations to full names (COLORADO SPGS → COLORADO SPRINGS, etc.)
+4. **Revised confidence formula**:
+
+```
+score = jaccard(name) * 0.3
+      + token_containment(name) * 0.2
+      + address_similarity * 0.25        ← NEW
+      + city_match_bonus (0.1)
+      + zip_match_bonus (0.05)
+      + address_exact_boost (0.1)        ← NEW: bonus for exact street match
+```
+
+### v1 → v2 → v3 Comparison
+
+| Metric | Wyoming v1 | Wyoming v2 | Wyoming v3 | Colorado v1 | Colorado v2 | Colorado v3 |
+|---|---|---|---|---|---|---|
+| Match rate | 81.5% | 88% | 88.0% | 74.5% | 80.4% | 80.3% |
+| High confidence (>=0.9) | — | 75 | 73 | — | 359 | 367 |
+| Low confidence (<0.7) | — | 1 | 1 | — | 23 | **2** |
+
+### Key Result: Same Recall, Much Better Precision
+
+v3 match rates are nearly identical to v2, but **low-confidence matches in Colorado dropped from 23 to 2**. Address matching acts as a confirmation signal — it either boosts fuzzy matches to medium/high confidence or lets them die below threshold.
+
+### False Positives Fixed by v3
+
+| v2 False Positive | v3 Outcome | Why |
+|---|---|---|
+| "PARTNERS IN HOUSING" → "PAGOSA HOUSING PARTNERS" | Eliminated | City normalization reveals different cities |
+| "PLACE, THE" → "URBAN WOODLANDS" | Now correctly matches "THE PLACE" | Address match (addr=1.0) confirms correct BMF record |
+| "HOLY CROSS ELECTRIC" → "ROUND-UP FOUNDATION" | Eliminated | Different address |
+| "WIND RIVER SAGE FUND" → "DEVELOPMENT FUND" | Confirmed as TRUE POSITIVE (0.78) | Exact same address (3 ETHETE RD), same city, same ZIP |
+
+### Address Matching as Tie-Breaker
+
+Address similarity proved valuable for confirming subsidiary/parent relationships:
+- "COMMUNITY HOUSING CONCEPTS EAST CENTRAL LLC" → parent org: addr=1.0 (same physical address → confirmed subsidiary)
+- "WESTERN GOVERNORS' ASSOCIATION" → "WESTERN GOVERNORS FOUNDATION": addr=1.0 (same building → related orgs)
+- "NATIONAL CONFERENCE OF STATE LEGISLATURES" → "NCSL FOUNDATION FOR STATE LEGISLATURES": addr=1.0 (same office → confirmed)

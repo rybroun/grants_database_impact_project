@@ -1,0 +1,38 @@
+{
+  "wyoming": {
+    "v1_rate": 81.5,
+    "v3_rate": 88.0,
+    "v3_matched": 81,
+    "v3_total": 92,
+    "conf": {
+      "high": 73,
+      "medium": 7,
+      "low": 1
+    },
+    "methods": {
+      "token+city": 5,
+      "exact+zip": 63,
+      "exact+city": 10,
+      "token+global": 1,
+      "exact_only": 2
+    }
+  },
+  "colorado": {
+    "v1_rate": 74.5,
+    "v3_rate": 80.3,
+    "v3_matched": 435,
+    "v3_total": 542,
+    "conf": {
+      "high": 367,
+      "medium": 66,
+      "low": 2
+    },
+    "methods": {
+      "exact+zip": 326,
+      "token+city": 31,
+      "exact+city": 39,
+      "exact_only": 38,
+      "token+global": 1
+    }
+  }
+}
