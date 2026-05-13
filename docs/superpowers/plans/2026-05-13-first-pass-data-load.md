@@ -324,10 +324,12 @@ git commit -m "feat: BMF downloader and indexer for all 50 states"
 
 ---
 
-### Task 4: USASpending Client
+### Task 4: USASpending Client (Bulk Download)
 
 **Files:**
 - Create: `pipeline/usaspending_client.py`
+
+**Approach change:** Instead of fetching recipients one-by-one via the search API (~100/min, hours nationally), use the **bulk download API** (`POST /api/v2/bulk_download/awards/`) which generates a single ZIP of CSVs containing all grant awards nationally. The CSV includes recipient UEI, name, address, award amount, CFDA, agency — everything we need in one download. This reduces the USASpending fetch from ~3 hours to ~10-15 minutes.
 
 - [ ] **Step 1: Implement API client**
 
@@ -1592,18 +1594,34 @@ LIMIT 20;
 
 ---
 
-## Pre-requisites Before Running
+## Pre-requisites
 
-1. **Create Supabase project** at https://supabase.com (free tier is fine)
-2. **Get credentials**: Project URL + anon key (or service role key) from Settings → API
-3. **Fill in `.env`** with real values
-4. **Run schema.sql** in Supabase SQL Editor
-5. **Connect Supabase MCP** in Claude Code for querying (optional but recommended)
+All completed:
+- [x] Supabase project created: `grant_tracker_impact_project` (whsecclvtqmzftrqfgam)
+- [x] Supabase MCP connected — can create schemas, run migrations, execute SQL directly
+- [x] `.env` created with SUPABASE_URL + SUPABASE_KEY (service role)
+- [x] Medallion schemas created (raw, staging, public) via MCP migration
+- [x] All 8 production tables + raw/staging tables created
+- [x] 16 sectors + 20 action types seeded
+- [x] `.env` is gitignored
+
+## Time Estimate
+
+| Step | Time |
+|---|---|
+| Tasks 1-3 (setup, normalize, BMF download) | ~15 min |
+| Task 4 (USASpending bulk download) | ~10-15 min |
+| Task 5 (ER matching in memory) | ~5 min |
+| Tasks 6-7 (schema done, load to Supabase) | ~10 min |
+| Task 8 (orchestrator + run) | ~5 min |
+| **Total** | **~40-50 min** |
 
 ## What You'll Have After This Plan
 
-- 8 tables in Supabase, all with correct schema and constraints
-- 16 sectors + 20 action types seeded
+- 3 schemas (raw, staging, public) with full lineage
+- Raw data preserved for re-processing without re-fetching
+- ER audit trail in staging.er_candidates
+- 8 production tables in public schema
 - ~50,000-100,000 organization records (80% BMF-matched with EIN, 20% er_created)
 - ~500,000+ grant records from USASpending (2020-2024)
 - Grant-grantee relationships linking grants to orgs
