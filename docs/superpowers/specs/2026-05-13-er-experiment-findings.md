@@ -2,7 +2,12 @@
 
 ## Summary
 
-We tested whether we can reliably link federal grant recipients (from USASpending.gov) to IRS-registered nonprofits (from the IRS Business Master File) using name and address matching. Using Wyoming as a test case, we achieved an **87-88% true match rate** on nonprofit recipients, with clear paths to improve further.
+We tested whether we can reliably link federal grant recipients (from USASpending.gov) to IRS-registered nonprofits (from the IRS Business Master File) using name and address matching. Tested on two states at different scales:
+
+- **Wyoming** (small): 92 nonprofits, 87-88% true match rate
+- **Colorado** (mid-size): 542 nonprofits, ~78% true match rate
+
+Match rates decrease at scale due to city name abbreviations, national franchise ambiguity, and short/generic org names. A three-tier confidence strategy (auto-approve / flag / human review) is the recommended approach.
 
 ## Methodology
 
@@ -142,3 +147,86 @@ In Wyoming alone, "UNIVERSITY OF WYOMING" has 258 BMF records (chapters/departme
 4. **Scale estimate**: Wyoming has 102 nonprofit grant recipients. Nationally, expect 50,000-100,000 unique nonprofit recipients. BMF has ~1.95M records. The matching pipeline runs in seconds for one state; national scale would take minutes, not hours.
 
 5. **ProPublica API** as a validation layer: For matched pairs, query ProPublica by EIN to confirm the org exists and pull additional metadata (990 financials, filing history). This serves as an independent confirmation of the match.
+
+---
+
+## Colorado Scale Test (542 nonprofits)
+
+### Scale Comparison
+
+| Metric | Wyoming | Colorado | Ratio |
+|---|---|---|---|
+| BMF records | 5,985 | 36,060 | 6.0x |
+| USASpending recipients | 102 | 558 | 5.5x |
+| Govt filtered | 10 | 16 | — |
+| Nonprofits to match | 92 | 542 | 5.9x |
+
+### Match Rates at Scale
+
+| Version | Wyoming | Colorado | Delta |
+|---|---|---|---|
+| v1 (exact) | 82.8% | 73.4% | -9.4% |
+| v2 (fuzzy) | 87-88% | 80.4% | -7-8% |
+| v2 improvement over v1 | +5% | +7% | — |
+| Estimated true match rate | 87-88% | ~78% | -10% |
+
+### Confidence Distribution (Colorado v2)
+
+| Level | Count | % | Estimated Precision |
+|---|---|---|---|
+| High (>=0.9) | 359 | 82% | ~99% |
+| Medium (0.7-0.9) | 54 | 12% | ~95% |
+| Low (<0.7) | 23 | 5% | ~55% |
+
+### New Failure Modes at Scale
+
+**1. City Name Abbreviations**
+BMF uses abbreviations that differ from USASpending:
+- "COLORADO SPRINGS" vs "COLORADO SPGS"
+- "GRAND JUNCTION" vs "GRAND JCT"
+
+This breaks city-level matching entirely. Fix: normalize common city abbreviations.
+
+**2. National Org Chapter Confusion**
+- "HABITAT FOR HUMANITY OF COLORADO" → matched to HFH International (wrong EIN)
+- "COLORADO TROUT UNLIMITED" → matched to national Trout Unlimited (wrong EIN)
+- State/local chapters often have different EINs from national orgs
+
+**3. Generic/Short Org Names**
+- "PLACE, THE" → matched to a random Colorado Springs nonprofit (wrong)
+- "LOVELL, INC." → matched to Lovell Rodeo Club (wrong)
+- Orgs with <3 meaningful tokens are high false-positive risk
+
+**4. Subsidiary/LLC Structures**
+- "COMMUNITY HOUSING CONCEPTS EAST CENTRAL LLC" → parent org "COMMUNITY HOUSING CONCEPTS INC"
+- May be intentional (roll up to parent) or wrong (different tax entity)
+
+### Precision Audit: Fuzzy Matches (15 reviewed)
+
+| Verdict | Count | % |
+|---|---|---|
+| True positive | 7 | 47% |
+| False positive | 4 | 27% |
+| Plausible (needs review) | 4 | 27% |
+
+False positives in fuzzy matches are **3x higher** at Colorado scale vs Wyoming. The primary cause is generic token overlap ("Housing", "Center", "Community") that creates false signals.
+
+### Examples of Each Category
+
+**True Positive (fuzzy match is correct):**
+- "ICAST (INTERNATIONAL CENTER FOR APPROPRIATE AND SUSTAINABLE)" → "ICAST INTERNATIONL CENTER FOR APPROPRIATE & SUSTANABL TECHNO" — typos in BMF, clearly same org
+- "GRAND VALLEY WATER USERS ASSOCIATION" → "GRAND VALLEY WATER USERS" — suffix difference + city abbreviation (GRAND JUNCTION vs GRAND JCT)
+
+**False Positive (fuzzy match is wrong):**
+- "PARTNERS IN HOUSING INC" (Colorado Springs) → "PAGOSA HOUSING PARTNERS" (Pagosa Springs) — different org, different city, tokens "HOUSING" + "PARTNERS" overlap
+- "HOLY CROSS ELECTRIC ASSOCIATION" → "HOLY CROSS ENERGY ROUND-UP FOUNDATION" — utility vs foundation, "HOLY CROSS" overlap
+
+**Plausible (needs human review):**
+- "COLORADO TROUT UNLIMITED" → "TROUT UNLIMITED" — state chapter vs national, may share EIN or may not
+
+### Improvement Recommendations (from CO experiment)
+
+1. **City name normalization dictionary** — map BMF abbreviations to full names (COLORADO SPGS → COLORADO SPRINGS, GRAND JCT → GRAND JUNCTION, etc.)
+2. **Minimum token threshold** — reject fuzzy matches where the query name has fewer than 3 significant tokens
+3. **Penalize generic tokens** — lower the weight of common words like "CENTER", "FOUNDATION", "COMMUNITY", "HOUSING", "ASSOCIATION" in Jaccard scoring
+4. **Chapter vs. national detection** — when matching "X OF COLORADO" to "X", check if both are in BMF and flag as potential chapter/national confusion
