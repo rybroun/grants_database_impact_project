@@ -1,3 +1,4 @@
+import math
 import uuid
 from supabase import create_client
 from pipeline.config import SUPABASE_URL, SUPABASE_KEY
@@ -9,9 +10,20 @@ def get_client():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+def _sanitize(value):
+    """Replace NaN/Inf floats with None so they serialize to JSON null."""
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    return value
+
+
+def _sanitize_row(row: dict) -> dict:
+    return {k: _sanitize(v) for k, v in row.items()}
+
+
 def _batch_insert(client, table: str, rows: list[dict], batch_size: int = 500, schema: str = "public") -> None:
-    """Insert rows in batches."""
-    target = client.schema(schema).table(table) if schema != "public" else client.table(table)
+    """Insert rows in batches, sanitizing non-JSON-compliant floats."""
+    rows = [_sanitize_row(r) for r in rows]
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
         if schema != "public":
