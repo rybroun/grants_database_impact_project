@@ -6,12 +6,10 @@ dist/
 build/
 .venv/
 venv/
-env/
 
 # Environment
 .env
 .env.local
-*.env
 
 # IDE
 .vscode/
@@ -20,10 +18,14 @@ env/
 
 # OS
 .DS_Store
-Thumbs.db
 
-# Screenshots (reference only, not needed in repo)
+# Data (large files, local only)
+data/raw/
+data/processed/
+data/logs/
+
+# Legacy (in case any remain)
+experiments/
 *.jpg
 *.jpeg
 *.png
-*.gif

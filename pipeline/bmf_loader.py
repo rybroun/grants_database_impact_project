@@ -1,11 +1,11 @@
 import os
 import pandas as pd
 import requests
-from pipeline.config import BMF_URL_TEMPLATE, US_STATES, DATA_DIR
+from pipeline.config import BMF_URL_TEMPLATE, US_STATES, BMF_DIR
 from pipeline.normalize import normalize_name, normalize_address, normalize_city
 
 
-def download_bmf(states: list[str] | None = None, data_dir: str = DATA_DIR) -> None:
+def download_bmf(states: list[str] | None = None, data_dir: str = BMF_DIR) -> None:
     """Download IRS BMF CSV files for the given states."""
     os.makedirs(data_dir, exist_ok=True)
     states = states or US_STATES
@@ -22,7 +22,7 @@ def download_bmf(states: list[str] | None = None, data_dir: str = DATA_DIR) -> N
             f.write(resp.content)
 
 
-def load_bmf(states: list[str] | None = None, data_dir: str = DATA_DIR) -> list[dict]:
+def load_bmf(states: list[str] | None = None, data_dir: str = BMF_DIR) -> list[dict]:
     """Load all BMF CSVs into a list of normalized dicts."""
     states = states or US_STATES
     records = []

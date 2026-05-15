@@ -102,24 +102,10 @@ def match_recipient(rec: dict, bmf_index: dict) -> tuple[dict | None, float, str
                     best_match = c
                     best_method = f"token+city (j={j:.2f}, addr={addr_sim:.2f})"
 
-    # Pass 3: Token globally (only if no strong match yet)
-    if best_score < 0.7:
-        qname = normalize_name(rec["name"])
-        qtokens = _get_tokens(qname)
-        for c in bmf_index["all"]:
-            j = _jaccard(qtokens, c["_tokens"])
-            cont = _token_containment(qtokens, c["_tokens"])
-            if j >= 0.6 or (cont >= 0.8 and j >= 0.4):
-                addr_sim = _address_similarity(raddr, c.get("STREET", ""))
-                city_bonus = 0.1 if c["_norm_city"] == rcity else 0
-                zip_bonus = 0.05 if c["_zip5"] == rzip else 0
-                score = j * 0.3 + cont * 0.2 + addr_sim * 0.25 + city_bonus + zip_bonus
-                if addr_sim >= 0.7:
-                    score += 0.1
-                if score > best_score:
-                    best_score = score
-                    best_match = c
-                    best_method = f"token+global (j={j:.2f}, addr={addr_sim:.2f})"
+    # Pass 3: Token globally — DISABLED for first pass (O(N*M) too slow at scale)
+    # Re-enable with an inverted index (tokens→records) for production
+    # if best_score < 0.7:
+    #     ... scans all 1.95M BMF records per unmatched recipient
 
     if best_match and best_score >= 0.55:
         return best_match, best_score, best_method

@@ -1,7 +1,7 @@
 import re
 
-def normalize_name(name: str) -> str:
-    if not name:
+def normalize_name(name) -> str:
+    if not isinstance(name, str) or not name:
         return ""
     name = name.upper().strip()
     for suffix in [
@@ -22,8 +22,8 @@ def normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip()
 
 
-def normalize_address(addr: str) -> str:
-    if not addr:
+def normalize_address(addr) -> str:
+    if not isinstance(addr, str) or not addr:
         return ""
     addr = addr.upper().strip()
     addr = re.sub(r"\bP\.?O\.?\s*BOX\s*\d*", "", addr)
@@ -55,8 +55,8 @@ _CITY_ABBREVS = {
 }
 
 
-def normalize_city(city: str) -> str:
-    if not city:
+def normalize_city(city) -> str:
+    if not isinstance(city, str) or not city:
         return ""
     city = city.upper().strip()
     return _CITY_ABBREVS.get(city, city)

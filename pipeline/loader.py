@@ -2,7 +2,7 @@
 Load USASpending bulk CSV + IRS BMF into a DuckDB database.
 
 Usage:
-    python -m pipeline.duckdb_loader --zip experiments/data/usaspending_archive_FY2024.zip
+    python -m pipeline.loader --zip data/raw/usaspending/usaspending_archive_FY2024.zip
 """
 import argparse
 import os
@@ -14,7 +14,7 @@ import shutil
 
 import duckdb
 
-from pipeline.config import DATA_DIR
+from pipeline.config import PROCESSED_DIR, BMF_DIR
 from pipeline.bmf_loader import download_bmf, load_bmf, build_bmf_index
 from pipeline.er_matcher import match_recipient, is_govt_entity
 from pipeline.normalize import normalize_name, normalize_address, normalize_city
@@ -386,7 +386,7 @@ def run(zip_path: str, db_path: str, bmf_states: list[str] | None = None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--zip', required=True)
-    parser.add_argument('--db', default=os.path.join(DATA_DIR, 'impact.duckdb'))
+    parser.add_argument('--db', default=os.path.join(PROCESSED_DIR, 'impact.duckdb'))
     parser.add_argument('--states', nargs='+', help='BMF states (default: all)')
     args = parser.parse_args()
     run(args.zip, args.db, [s.lower() for s in args.states] if args.states else None)
