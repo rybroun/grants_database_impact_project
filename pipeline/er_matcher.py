@@ -102,6 +102,18 @@ def match_recipient(rec: dict, bmf_index: dict) -> tuple[dict | None, float, str
                     best_match = c
                     best_method = f"token+city (j={j:.2f}, addr={addr_sim:.2f})"
 
+    # Pass 2.5: Address-only lookup for nonprofits (catches renamed orgs)
+    # Only for nonprofit-classified recipients — BMF is a nonprofit registry
+    # so address match is high signal. Avoids noise from for-profits at shared addresses.
+    if best_score < 0.55 and raddr:
+        biz_desc = rec.get("business_types_description", "").upper()
+        is_nonprofit = any(x in biz_desc for x in ["NONPROFIT", "501C3"])
+        if is_nonprofit and rcity in bmf_index.get("by_city", {}):
+            for c in bmf_index["by_city"][rcity]:
+                addr_sim = _address_similarity(raddr, c.get("STREET", ""))
+                if addr_sim >= 0.9:
+                    return c, 0.75, f"addr_only_nonprofit (addr={addr_sim:.2f})"
+
     # Pass 3: Token globally — DISABLED for first pass (O(N*M) too slow at scale)
     # Re-enable with an inverted index (tokens→records) for production
     # if best_score < 0.7:
