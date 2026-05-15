@@ -2,8 +2,29 @@ from pipeline.normalize import normalize_name, normalize_address, normalize_city
 
 def test_normalize_name_strips_suffixes():
     assert normalize_name("PARTNERS IN HOUSING INC") == "PARTNERS IN HOUSING"
-    assert normalize_name("HOLY CROSS ELECTRIC ASSOCIATION, INC.") == "HOLY CROSS ELECTRIC ASSOCIATION"
+    assert normalize_name("HOLY CROSS ELECTRIC ASSOCIATION, INC.") == "HOLY CROSS ELECTRIC"
     assert normalize_name("DIVERSUS HEALTH SERVICES") == "DIVERSUS HEALTH"
+
+def test_normalize_name_corporation_before_corp():
+    """Regression: CORPORATION must be stripped before CORP to avoid 'HEALTHORATION'."""
+    assert normalize_name("DIMENSIONS HEALTH CORPORATION") == "DIMENSIONS HEALTH"
+    assert normalize_name("ABC CORPORATION") == "ABC"
+    assert normalize_name("ABC CORP") == "ABC"
+    assert normalize_name("ABC CORP.") == "ABC"
+
+def test_normalize_name_incorporated_before_inc():
+    """Regression: INCORPORATED must be stripped before INC."""
+    assert normalize_name("HELPERS INCORPORATED") == "HELPERS"
+    assert normalize_name("HELPERS INC") == "HELPERS"
+
+def test_normalize_name_hyphens_become_spaces():
+    """Regression: hyphens should become spaces, not merge words."""
+    assert normalize_name("CHILDRENS-BOOKS ON WHEELS") == "CHILDRENS BOOKS ON WHEELS"
+    assert normalize_name("MID-SOUTH COMMUNITY CENTER") == "MID SOUTH COMMUNITY CENTER"
+
+def test_normalize_name_strips_association():
+    assert normalize_name("WYOMING WATER USERS ASSOCIATION") == "WYOMING WATER USERS"
+    assert normalize_name("GRAND VALLEY ASSN") == "GRAND VALLEY"
 
 def test_normalize_name_handles_ampersand():
     assert normalize_name("WYOMING CHILD & FAMILY DEVELOPMENT") == "WYOMING CHILD AND FAMILY DEVELOPMENT"

@@ -4,18 +4,23 @@ def normalize_name(name) -> str:
     if not isinstance(name, str) or not name:
         return ""
     name = name.upper().strip()
+    # IMPORTANT: longer suffixes MUST come before shorter ones
+    # e.g., CORPORATION before CORP, INCORPORATED before INC
     for suffix in [
-        ", INC.", ", INC", " INC.", " INC", " INCORPORATED",
-        ", LLC", " LLC", ", L.L.C.",
-        ", CORP.", ", CORP", " CORP.", " CORP", " CORPORATION",
-        ", CO.", ", CO", " COMPANY",
-        ", LTD", " LTD", " LIMITED",
+        " INCORPORATED", ", INC.", ", INC", " INC.", " INC",
+        ", L.L.C.", ", LLC", " LLC",
+        " CORPORATION", ", CORP.", ", CORP", " CORP.", " CORP",
+        " COMPANY", ", CO.", ", CO",
+        " LIMITED", ", LTD", " LTD",
         ", P.C.", ", PC",
         " SERVICES", " ASSOCIATES", " GROUP", " AGENCY",
+        " ASSOCIATION", " ASSN",
     ]:
         name = name.replace(suffix, "")
     name = name.replace(" & ", " AND ").replace("&", " AND ")
     name = name.replace("'S", "S").replace("'", "")
+    # Replace hyphens with spaces before stripping punctuation
+    name = name.replace("-", " ")
     name = re.sub(r"\([^)]*\)", "", name)
     name = re.sub(r"\bTHE\s+", "", name)
     name = re.sub(r"[^A-Z0-9\s]", "", name)
